@@ -272,6 +272,11 @@ ChatResult ClaudeCodeProvider::RunAgent(const AgentTurn& turn, const AgentCallba
     send(AgentPrompt(turn), AgentAttachments(turn));
 
     std::string session = turn.resumeSession;
+    // Claude Code's total_cost_usd is the session's running total, carried
+    // over when a session is resumed. A run's own cost is what it adds.
+    double runningTotal = std::max(0.0, turn.sessionCostBefore);
+    std::string costSession = turn.resumeSession;
+    double pendingTotal = -1;
     Message pending;
     std::string pendingId;
     bool hasPending = false;
@@ -306,6 +311,9 @@ ChatResult ClaudeCodeProvider::RunAgent(const AgentTurn& turn, const AgentCallba
         if (!hasPending) return;
         hasPending = false;
         pending.providerData["claude_code"] = {{"session_id", session}};
+        // The session's running total as of this message, for the next run's own cost.
+        if (pendingTotal >= 0) pending.providerData["claude_code"]["total_cost"] = pendingTotal;
+        pendingTotal = -1;
         Message m = pending;
         if (callbacks.onMessage) callbacks.onMessage(m);
         for (const auto& call : pending.toolCalls) {
@@ -667,15 +675,24 @@ ChatResult ClaudeCodeProvider::RunAgent(const AgentTurn& turn, const AgentCallba
         } else if (type == "result") {
             gotResult = true;
             session = Str(ev, "session_id").empty() ? session : Str(ev, "session_id");
-            if (hasPending) {
-                // The whole run's cost goes on its last message.
-                if (auto cost = ev.find("total_cost_usd"); cost != ev.end() && cost->is_number()) pending.usage.cost = cost->get<double>();
-                flush();
-            }
             result.usage = ReadUsage(ev.value("usage", json::object()));
-            if (auto cost = ev.find("total_cost_usd"); cost != ev.end() && cost->is_number()) {
-                totalCost += cost->get<double>();
-                anyCost = true;
+            if (hasPending) {
+                // The run's own cost goes on its last message. (Without one, it
+                // stays in the running total and counts with the next.)
+                if (auto cost = ev.find("total_cost_usd"); cost != ev.end() && cost->is_number()) {
+                    double total = cost->get<double>();
+                    if (session != costSession) {
+                        runningTotal = 0;  // a new session (the old one could not be resumed)
+                        costSession = session;
+                    }
+                    double run = total >= runningTotal ? total - runningTotal : total;
+                    runningTotal = total;
+                    pending.usage.cost = run;
+                    pendingTotal = total;
+                    totalCost += run;
+                    anyCost = true;
+                }
+                flush();
             }
             if (anyCost) result.usage.cost = totalCost;
             result.stopReason = Str(ev, "stop_reason");

@@ -20,6 +20,7 @@
 #include "core/util.h"
 
 #include <miniz.h>
+#include <sqlite3.h>
 
 #include <chrono>
 #include <condition_variable>
@@ -170,7 +171,63 @@ static void TestUtil() {
     if (!blocks.empty()) CHECK_EQ(blocks[0], std::string("int x;\n"));
 }
 
+// Claude Code replies saved holding the session's running total as their cost:
+// split into each run's own cost, in memory and in an older database.
+static void TestAgentCostMigration(const std::string& dir) {
+    auto reply = [](const std::string& session, double cost) {
+        Message m;
+        m.role = Role::Assistant;
+        m.content = "r";
+        m.usage.cost = cost;
+        m.providerData["claude_code"] = {{"session_id", session}};
+        return m;
+    };
+    std::vector<Message> list = {reply("a", 1.0), reply("a", -1), reply("a", 1.5), reply("b", 0.25), reply("a", 4.0),
+                                 reply("b", 0.75)};
+    std::vector<size_t> changed = SplitAgentRunningCosts(list);
+    CHECK_EQ(changed.size(), size_t{5});  // not the one without a cost
+    CHECK(std::abs(list[0].usage.cost - 1.0) < 1e-9);
+    CHECK(std::abs(list[2].usage.cost - 0.5) < 1e-9);
+    CHECK(std::abs(list[3].usage.cost - 0.25) < 1e-9);
+    CHECK(std::abs(list[4].usage.cost - 2.5) < 1e-9);
+    CHECK(std::abs(list[5].usage.cost - 0.5) < 1e-9);
+    CHECK(std::abs(list[4].providerData["claude_code"].value("total_cost", 0.0) - 4.0) < 1e-9);
+    CHECK(std::abs(AgentSessionCost(list, "a") - 4.0) < 1e-9);
+    CHECK(std::abs(AgentSessionCost(list, "b") - 0.75) < 1e-9);
+    CHECK_EQ(AgentSessionCost(list, "c"), 0.0);
+    CHECK(SplitAgentRunningCosts(list).empty());  // only once
+
+    // The same in a database from before (user_version 0), when it opens.
+    std::string path = JoinPath(dir, "costs.db");
+    {
+        Database db;
+        CHECK(db.Open(path));
+        Conversation c;
+        c.title = "Costs";
+        CHECK(db.CreateConversation(c));
+        for (double cost : {2.0, 3.0, 3.5}) {
+            Message m = reply("s", cost);
+            m.conversationId = c.id;
+            CHECK(db.AddMessage(m));
+        }
+    }
+    sqlite3* raw = nullptr;
+    CHECK(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
+    CHECK(sqlite3_exec(raw, "PRAGMA user_version = 0", nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(raw);
+    Database db;
+    CHECK(db.Open(path));
+    auto convs = db.ListConversations();
+    CHECK_EQ(convs.size(), size_t{1});
+    if (!convs.empty()) {
+        CHECK(std::abs(convs[0].totalCost - 3.5) < 1e-9);  // not 8.5
+        auto saved = db.LoadMessages(convs[0].id);
+        CHECK(saved.size() == 3 && std::abs(saved[1].usage.cost - 1.0) < 1e-9 && std::abs(saved[2].usage.cost - 0.5) < 1e-9);
+    }
+}
+
 static void TestDatabase(const std::string& dir) {
+    TestAgentCostMigration(dir);
     Database db;
     CHECK(db.Open(JoinPath(dir, "test.db")));
     Conversation c;
@@ -659,6 +716,16 @@ static void TestAgents(const std::string& root) {
     TestListener resumed = RunAgentTurn(claude, chat.messages, "And again", false, true, root);
     CHECK(resumed.outcome == ChatListener::Outcome::Done);
     CHECK(resumed.text.find("Resumed sess-1") != std::string::npos);
+    // Claude Code's total_cost_usd carries the session's earlier runs; each
+    // reply costs only what its own run added, and keeps the running total.
+    if (!chat.messages.empty()) {
+        CHECK(std::abs(chat.messages[0].providerData["claude_code"].value("total_cost", -1.0) - 0.0125) < 1e-9);
+    }
+    CHECK(!resumed.messages.empty());
+    if (!resumed.messages.empty()) {
+        CHECK(std::abs(resumed.messages.back().usage.cost - 0.0125) < 1e-9);
+        CHECK(std::abs(resumed.messages.back().providerData["claude_code"].value("total_cost", -1.0) - 0.025) < 1e-9);
+    }
 
     std::cout << "  claude code: approved write\n";
     TestListener write = RunAgentTurn(claude, {}, "Please write a file", true, true, root);

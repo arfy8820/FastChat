@@ -65,8 +65,15 @@ def taken_in(msg):
              "parent_tool_use_id": None, "session_id": session})
 
 
+# Like Claude Code, total_cost_usd is the session's running total, carried over
+# on --resume (here as if the session's earlier runs cost 0.0125).
+spent = 0.0125 if resume else 0.0
+
+
 def result(cost):
-    out({"type": "result", "subtype": "success", "is_error": False, "session_id": session, "total_cost_usd": cost,
+    global spent
+    spent += cost
+    out({"type": "result", "subtype": "success", "is_error": False, "session_id": session, "total_cost_usd": spent,
          "stop_reason": "end_turn", "result": "ok",
          "usage": {"input_tokens": 6, "cache_read_input_tokens": 200, "cache_creation_input_tokens": 50, "output_tokens": 20}})
 

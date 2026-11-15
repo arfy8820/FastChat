@@ -133,7 +133,38 @@ bool Database::Open(const std::string& path) {
     char* err = nullptr;
     sqlite3_exec(m_db, "ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT ''", nullptr, nullptr, &err);
     sqlite3_free(err);
+    Migrate();
     return true;
+}
+
+void Database::Migrate() {
+    int64_t version = 0;
+    {
+        Stmt s(m_db, "PRAGMA user_version");
+        if (s.Step() == SQLITE_ROW) version = s.Int(0);
+    }
+    if (version < 1) {
+        // 1: Claude Code replies held the session's running total as their
+        // cost (so totals counted earlier runs again and again); each now holds
+        // its own run's cost.
+        std::vector<int64_t> ids;
+        {
+            Stmt s(m_db, "SELECT DISTINCT conversation_id FROM messages WHERE provider_data LIKE '%claude_code%'");
+            while (s.Step() == SQLITE_ROW) ids.push_back(s.Int(0));
+        }
+        Exec("BEGIN");
+        bool ok = true;
+        for (int64_t id : ids) {
+            std::vector<Message> messages = LoadMessages(id);
+            for (size_t i : SplitAgentRunningCosts(messages)) ok = UpdateMessage(messages[i]) && ok;
+        }
+        if (ok) {
+            Exec("COMMIT");
+            Exec("PRAGMA user_version = 1");
+        } else {
+            Exec("ROLLBACK");  // tried again next time
+        }
+    }
 }
 
 void Database::Close() {

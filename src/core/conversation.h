@@ -154,6 +154,14 @@ Message MakeNote(NoteKind kind, const std::string& content, const json& extra = 
 std::vector<Message> ContextMessages(const std::vector<Message>& all, bool forAgent = false);
 
 // A coding agent's note that it compacted its context.
+// Claude Code's session cost so far: the running total recorded on the
+// latest of the session's messages that has one (0 if none does).
+double AgentSessionCost(const std::vector<Message>& messages, const std::string& sessionId);
+// Messages saved before FastChat knew better hold Claude Code's running total
+// as their cost; this makes each one the cost of its own run (keeping the
+// running total beside it). Returns the indexes of the messages changed.
+std::vector<size_t> SplitAgentRunningCosts(std::vector<Message>& messages);
+
 bool IsAgentCompactionNote(const Message& m);
 
 // For each message, whether it is from before the latest compaction (FastChat's

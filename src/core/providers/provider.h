@@ -183,6 +183,7 @@ struct AgentTurn {
     // When set, Claude Code's mode decides what needs asking, and FastChat asks.
     std::string permissionMode;
     std::string resumeSession;    // continue this session instead of sending the history
+    double sessionCostBefore = 0; // the resumed session's running cost so far (Claude Code)
 };
 
 // What the user decided about a coding agent's plan (Claude Code's plan mode).

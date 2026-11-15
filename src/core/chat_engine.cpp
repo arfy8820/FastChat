@@ -163,6 +163,7 @@ void ChatRunner::RunAgentTurn(ChatTurn turn, Provider& provider) {
     agent.tools = turn.tools;
     agent.approval = turn.toolContext.commandApproval;
     agent.permissionMode = turn.agentMode;
+    agent.sessionCostBefore = 0;
     // Continue the agent's own session when nothing but new messages from the
     // user came after its last reply; otherwise start afresh with the history.
     // Its compactions (/compact gets no reply) continue the same session.
@@ -181,6 +182,7 @@ void ChatRunner::RunAgentTurn(ChatTurn turn, Provider& provider) {
         }
         break;
     }
+    if (!agent.resumeSession.empty()) agent.sessionCostBefore = AgentSessionCost(messages, agent.resumeSession);
 
     AgentCallbacks callbacks;
     callbacks.onText = [this](const std::string& t) { Post([t](ChatListener& l) { l.OnTextDelta(t); }); };

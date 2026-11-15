@@ -38,6 +38,7 @@ public:
 
 private:
     bool Exec(const char* sql);
+    void Migrate();  // brings older databases up to date (PRAGMA user_version)
 
     sqlite3* m_db = nullptr;
     std::recursive_mutex m_mutex;

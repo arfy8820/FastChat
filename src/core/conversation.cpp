@@ -1,6 +1,8 @@
 #include "core/conversation.h"
 #include "core/util.h"
 
+#include <map>
+
 const char* RoleKey(Role role) {
     switch (role) {
         case Role::System: return "system";
@@ -172,6 +174,49 @@ Message MakeNote(NoteKind kind, const std::string& content, const json& extra) {
     f["kind"] = kind == NoteKind::Error ? "error" : kind == NoteKind::Compaction ? "compaction" : "note";
     m.providerData["fastchat"] = f;
     return m;
+}
+
+namespace {
+
+const json* ClaudeCodeData(const Message& m) {
+    if (!m.providerData.is_object()) return nullptr;
+    auto it = m.providerData.find("claude_code");
+    return it != m.providerData.end() && it->is_object() ? &*it : nullptr;
+}
+
+}  // namespace
+
+double AgentSessionCost(const std::vector<Message>& messages, const std::string& sessionId) {
+    for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+        const json* cc = ClaudeCodeData(*it);
+        if (!cc || cc->value("session_id", std::string()) != sessionId) continue;
+        if (auto t = cc->find("total_cost"); t != cc->end() && t->is_number()) return t->get<double>();
+    }
+    return 0;
+}
+
+std::vector<size_t> SplitAgentRunningCosts(std::vector<Message>& messages) {
+    std::vector<size_t> changed;
+    std::map<std::string, double> running;  // session -> its running total so far
+    for (size_t i = 0; i < messages.size(); i++) {
+        Message& m = messages[i];
+        const json* cc = ClaudeCodeData(m);
+        if (!cc) continue;
+        std::string session = cc->value("session_id", std::string());
+        if (session.empty()) continue;
+        if (auto t = cc->find("total_cost"); t != cc->end() && t->is_number()) {
+            running[session] = t->get<double>();  // already its own run's cost
+            continue;
+        }
+        if (m.usage.cost < 0) continue;
+        double total = m.usage.cost;
+        double before = running.count(session) ? running[session] : 0;
+        m.usage.cost = total >= before ? total - before : total;
+        m.providerData["claude_code"]["total_cost"] = total;
+        running[session] = total;
+        changed.push_back(i);
+    }
+    return changed;
 }
 
 bool IsAgentCompactionNote(const Message& m) {
