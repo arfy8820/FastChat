@@ -124,6 +124,17 @@ if prompt.startswith("/compact"):  # like Claude Code: what follows is instructi
     out({"type": "user", "message": {"role": "user", "content": "<local-command-stdout>Compacted </local-command-stdout>"},
          "parent_tool_use_id": None, "session_id": session})
     result(0.005)
+elif "LOOKUP" in prompt:
+    # A chat that may look things up: which tools it was given, and whether
+    # FastChat lets it search without asking.
+    given = args[args.index("--tools") + 1] if "--tools" in args else "all"
+    out({"type": "control_request", "request_id": "req-web", "request": {"subtype": "can_use_tool", "tool_name": "WebSearch",
+         "input": {"query": "weather"}, "tool_use_id": "toolu_web"}})
+    behavior = next_message()["response"]["response"]["behavior"]
+    text = "Tools %s; WebSearch %s." % (given or "none", behavior)
+    stream_text(text)
+    assistant("msg_1", {"type": "text", "text": text})
+    result(0.001)
 elif "PLANMODE" in prompt and not no_tools:
     # Plan mode: the plan is put to the user with ExitPlanMode; approved, it
     # goes on in the mode the answer sets (and says so in a status event).

@@ -183,6 +183,7 @@ set(FASTCHAT_CORE_SOURCES
     src/core/conversation.cpp
     src/core/chat_engine.cpp
     src/core/code_tools.cpp
+    src/core/web_tools.cpp
     src/core/computer_tools.cpp
     src/core/events.cpp
     src/core/log.cpp

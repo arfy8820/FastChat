@@ -1036,6 +1036,23 @@ static void TestAgents(const std::string& root) {
         CHECK(toldNo);
     }
 
+    // A chat may look things up with Claude Code's own WebSearch and WebFetch
+    // (nothing else), allowed without asking; without the web tools, no tools.
+    std::cout << "  claude code: a chat's web tools\n";
+    {
+        ChatTurn chatWeb = live;
+        chatWeb.tools = false;
+        chatWeb.webTools = true;
+        chatWeb.toolContext.commandApproval = "ask";
+        chatWeb.request.messages = {UserMessage("LOOKUP the weather")};
+        TestListener looked = Drive(chatWeb);
+        CHECK(looked.Said("Tools WebSearch,WebFetch; WebSearch allow."));
+        CHECK(looked.approvals.empty());
+        chatWeb.webTools = false;
+        TestListener none = Drive(chatWeb);
+        CHECK(!none.messages.empty() && StartsWith(none.messages.back().content, "Tools none;"));
+    }
+
     // Plan mode: the plan is always put to the user (even with everything
     // allowed); approved, Claude Code goes on in the mode chosen, and FastChat
     // hears of it. Kept planning, what the user said goes back.
@@ -1124,7 +1141,8 @@ static void TestImageRequests(const std::string& base) {
         const char* path;
         const char* model;
     };
-    for (const Case& c : {Case{"openrouter", "/openai", "mock-model"}, Case{"anthropic", "/anthropic", "claude-opus-5-5"},
+    for (const Case& c : {Case{"openrouter", "/openai", "mock-model"}, Case{"openai", "/openai", "gpt-6.1-mock"},
+                          Case{"anthropic", "/anthropic", "claude-opus-5-5"},
                           Case{"gemini", "/gemini", "gemini-mock"}, Case{"ollama", "/ollama", "mock:latest"}}) {
         ProviderConfig config = MockProvider(base, c.kind, c.path);
         ChatRequest request;
@@ -1697,6 +1715,107 @@ static void TestUpdater(const std::string& dir) {
 }
 
 // Files attached to a message: what they are, what is refused, where they go.
+// OpenAI's Responses API: what goes in, and what comes back as it streams and whole.
+static void TestOpenAIResponses(const std::string& base, const std::string& root) {
+    std::cout << "  openai (Responses API)\n";
+    ProviderConfig config = MockProvider(base, "openai", "/openai");
+    TestListener loop = RunTurn(config, "gpt-6.1-mock", true, root);
+    CHECK(loop.outcome == ChatListener::Outcome::Done);
+    if (!loop.error.empty()) std::cerr << "    error: " << loop.error << "\n";
+    CHECK(loop.reasoning.find("Let me think.") != std::string::npos);  // the reasoning summary
+    if (loop.messages.size() == 3) {
+        const Message& call = loop.messages[0];
+        CHECK(call.toolCalls.size() == 1 && call.toolCalls[0].id == "call_r1" && call.toolCalls[0].arguments == "{\"path\": \".\"}");
+        CHECK_EQ(call.reasoning, std::string("Let me think."));
+        json kept = call.providerData["openai"]["reasoning"];
+        CHECK(kept.is_array() && kept.size() == 1 && kept[0].value("encrypted_content", "") == "enc123");
+        CHECK_EQ(loop.messages[2].usage.cachedInputTokens, int64_t{40});
+        CHECK_EQ(loop.messages[2].usage.reasoningTokens, int64_t{5});
+    }
+    // Not streamed: the whole response at once.
+    ChatRequest once;
+    once.model = "gpt-6.1-mock";
+    once.stream = false;
+    once.messages = {UserMessage("Hi")};
+    ChatResult whole = CreateProvider(config)->Chat(once, StreamCallbacks(), nullptr);
+    if (!whole.ok) std::cerr << "    error: " << whole.error << "\n";
+    CHECK(whole.ok && whole.text == "Whole answer." && whole.reasoning == "Briefly.");
+    CHECK_EQ(whole.usage.inputTokens, int64_t{7});
+    ChatResult bad = QuickChat(config, "fail", "x", nullptr);
+    CHECK(!bad.ok && bad.error.find("Model fail does not exist") != std::string::npos);
+}
+
+// Searching the web, reading pages and the time, for chats (and code).
+static void TestWebTools(const std::string& base, const std::string& root) {
+    std::cout << "Web tools:\n";
+    std::string page = "<html><head><title>T &amp; t</title><script>alert(1)</script></head><body><h2>Head</h2>"
+                       "<p>One&nbsp;two &#x263A; &#9731;</p><ul><li>a</li><li>b</li></ul><table><tr><td>x</td><td>y</td></tr></table>"
+                       "<!-- hidden --><style>.c{}</style><p>End</p></body></html>";
+    std::string text = HtmlToText(page);
+    CHECK_EQ(text, std::string("Title: T & t\n\nHead\n\nOne two \xE2\x98\xBA \xE2\x98\x83\n\n- a\n- b\n\nx | y |\n\nEnd"));
+    std::string ddg = "<a class=\"result__a\" href=\"https://duckduckgo.com/y.js?ad=1\">Ad</a>"
+                      "<a rel=\"nofollow\" class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.example%2Fx%3Fy%3D1&amp;rut=z\">"
+                      "A <b>title</b></a><a class=\"result__snippet\" href=\"#\">The <b>snippet</b> &amp; more</a>"
+                      "<a class=\"result__a\" href=\"https://b.example/\">B</a>";
+    std::vector<SearchResult> found = ParseSearchResults(ddg);
+    CHECK_EQ(found.size(), size_t{2});
+    if (found.size() == 2) {
+        CHECK(found[0].title == "A title" && found[0].url == "https://a.example/x?y=1" && found[0].snippet == "The snippet & more");
+        CHECK(found[1].url == "https://b.example/" && found[1].snippet.empty());
+    }
+    CHECK(IsWebTool("web_search") && IsWebTool("fetch_page") && IsWebTool("current_time") && !IsWebTool("read_file"));
+    ToolOutcome time = RunWebTool({"t1", "current_time", "{}"}, nullptr);
+    CHECK(!time.error && StartsWith(time.output, "It is "));
+    ToolOutcome read = RunWebTool({"t2", "fetch_page", JsonDump(json{{"url", base + "/page"}})}, nullptr);
+    CHECK(!read.error && read.output.find("Title: Mock page") != std::string::npos &&
+          read.output.find("- Monday: 12\xC2\xB0" "C") != std::string::npos && read.output.find("var x") == std::string::npos);
+    CHECK_EQ(DescribeToolCall({"t3", "web_search", "{\"query\":\"cats\"}"}), std::string("Search the web for cats"));
+    // The real thing, when asked for: DuckDuckGo and a real page.
+    if (const char* real = std::getenv("FASTCHAT_REAL_WEB"); real && *real) {
+        ToolOutcome s = RunWebTool({"r1", "web_search", "{\"query\":\"weather in London\"}"}, nullptr);
+        std::cout << "  real search: " << s.summary << "\n" << OneLine(s.output, 400) << "\n";
+        CHECK(!s.error && s.output.find("https://") != std::string::npos);
+        ToolOutcome p = RunWebTool({"r2", "fetch_page", "{\"url\":\"https://example.com\"}"}, nullptr);
+        std::cout << "  real page: " << OneLine(p.output, 300) << "\n";
+        CHECK(!p.error && p.output.find("Example Domain") != std::string::npos);
+    }
+
+    // A chat that searches: the model asks, FastChat searches (the mock's
+    // stand-in for DuckDuckGo), the model answers from the results.
+#ifdef _WIN32
+    _putenv_s("FASTCHAT_SEARCH_URL", (base + "/search").c_str());
+#else
+    setenv("FASTCHAT_SEARCH_URL", (base + "/search").c_str(), 1);
+#endif
+    ChatTurn chat;
+    chat.provider = MockProvider(base, "openrouter", "/openai");
+    chat.request.model = "mock-model";
+    chat.request.messages = {UserMessage("What is the weather in London?")};
+    chat.webTools = true;
+    TestListener l = Drive(chat);
+    if (!l.error.empty()) std::cerr << "    error: " << l.error << "\n";
+    CHECK(l.outcome == ChatListener::Outcome::Done);
+    CHECK_EQ(l.messages.size(), size_t{3});
+    if (l.messages.size() == 3) {
+        CHECK(l.messages[0].toolCalls.size() == 1 && l.messages[0].toolCalls[0].name == "web_search");
+        const std::string& results = l.messages[1].content;
+        CHECK(results.find("1. London & weather\n   https://weather.example/london?days=3\n   Rain later, 12\xC2\xB0" "C, about weather in London.") != std::string::npos);
+        CHECK(results.find("Ad") == std::string::npos);
+        CHECK_EQ(l.messages[2].content, std::string("Searched: London & weather"));
+    }
+    CHECK(l.approvals.empty());  // looking things up asks nothing
+    // Without them, a chat has no tools at all.
+    chat.webTools = false;
+    TestListener plain = Drive(chat);
+    CHECK(plain.messages.size() == 1 && plain.messages[0].toolCalls.empty());
+#ifdef _WIN32
+    _putenv_s("FASTCHAT_SEARCH_URL", "");
+#else
+    unsetenv("FASTCHAT_SEARCH_URL");
+#endif
+    (void)root;
+}
+
 static void TestAttachments(const std::string& dir) {
     std::cout << "Attachments:\n";
     CHECK_EQ(AttachmentType("a.png", "\x89PNG\r\n\x1a\nrest"), std::string("image/png"));
@@ -1705,17 +1824,46 @@ static void TestAttachments(const std::string& dir) {
     CHECK_EQ(AttachmentType("a.webp", std::string("RIFF\x10\0\0\0WEBPVP8 ", 16)), std::string("image/webp"));
     CHECK_EQ(AttachmentType("a.pdf", "%PDF-1.7"), std::string("application/pdf"));
     CHECK_EQ(AttachmentType("notes.md", "# Notes\ncaf\xC3\xA9\n"), std::string("text/plain"));
-    CHECK_EQ(AttachmentType("app.exe", std::string("MZ\x90\0\x03", 5)), std::string());  // binary: refused
-    CHECK_EQ(AttachmentType("latin1.txt", "caf\xE9"), std::string());                     // not UTF-8 text
+    // Anything else: text in other encodings, or a file of a type guessed from its name.
+    CHECK_EQ(AttachmentType("app.exe", std::string("MZ\x90\0\x03", 5)), std::string("application/vnd.microsoft.portable-executable"));
+    CHECK_EQ(AttachmentType("song.mid", std::string("MThd\0\0\0\x06", 8)), std::string("audio/midi"));
+    CHECK_EQ(AttachmentType("blob.xyz", std::string("\x01\x02\0\x03", 4)), std::string("application/octet-stream"));
+    CHECK_EQ(AttachmentType("latin1.txt", "caf\xE9"), std::string("text/plain"));
+    CHECK_EQ(AttachmentType("project.rpp", "<REAPER_PROJECT 0.1 \"7.0\"\n>"), std::string("text/plain"));
 
     Attachment a;
     std::string error;
     CHECK(!MakeAttachment("big.png", "\x89PNG\r\n\x1a\n" + std::string(kMaxImageBytes, 'x'), a, error));
     CHECK(error.find("big.png") != std::string::npos && error.find("up to") != std::string::npos);
-    CHECK(!MakeAttachment("tool.exe", std::string("MZ\0\0", 4), a, error));
-    CHECK(error.find("images (PNG, JPEG, GIF, WebP), PDFs and text files") != std::string::npos);
     CHECK(MakeAttachment("bom.txt", "\xEF\xBB\xBFhello", a, error));
     CHECK_EQ(a.data, std::string("hello"));  // the byte order mark is dropped
+    CHECK(MakeAttachment("latin1.txt", "caf\xE9 \x93q\x94", a, error) && a.IsText());
+    CHECK_EQ(a.data, std::string("caf\xC3\xA9 \xE2\x80\x9Cq\xE2\x80\x9D"));  // Windows-1252 becomes UTF-8
+    CHECK(MakeAttachment("wide.txt", std::string("\xFF\xFEh\0i\0\x3D\xD8\x00\xDE", 10), a, error) && a.IsText());
+    CHECK_EQ(a.data, std::string("hi\xF0\x9F\x98\x80"));  // UTF-16, a surrogate pair too
+
+    // Other files: saved in a code conversation's folder, or base64 in a chat
+    // when small; a large one is refused for a chat.
+    Attachment midi;
+    CHECK(MakeAttachment("song.mid", std::string("MThd\0\0\0\x06\0\x01", 10), midi, error) && midi.IsOtherFile());
+    CHECK_EQ(DescribeAttachment(midi), std::string("song.mid, ") + FormatBytes(10) + " file");
+    CHECK(AttachmentProblem(midi, false).empty());
+    Attachment huge = midi;
+    huge.data = std::string(kMaxInlineFileBytes + 1, '\x01');
+    CHECK(!AttachmentProblem(huge, false).empty() && AttachmentProblem(huge, true).empty());
+    std::string project = JoinPath(dir, "attach-project");
+    fs::create_directories(PathFromUtf8(project));
+    Message inFolder;
+    inFolder.content = "Fix the tempo";
+    AttachToMessage(inFolder, {midi, midi}, project);
+    std::string saved;
+    CHECK(ReadFileText(JoinPath(JoinPath(project, "fastchat-attachments"), "song.mid"), saved) && saved == midi.data);
+    CHECK(fs::exists(PathFromUtf8(JoinPath(JoinPath(project, "fastchat-attachments"), "song (2).mid"))));  // not overwritten
+    CHECK(inFolder.content.find("Saved in the project folder as fastchat-attachments/song.mid]") != std::string::npos);
+    CHECK(inFolder.content.find("fastchat-attachments/song (2).mid") != std::string::npos && inFolder.images.empty());
+    Message inChat;
+    AttachToMessage(inChat, {midi});
+    CHECK_EQ(inChat.content, "[Attached file: song.mid, " + FormatBytes(10) + ", audio/midi, in base64]\n" + Base64Encode(midi.data) + "\n");
 
     std::string path = JoinPath(dir, "notes.txt");
     WriteFileText(path, "line one\nline two");
@@ -2054,6 +2202,9 @@ int main() {
         std::cout << "Providers against " << mock << ":\n";
         std::string root = JoinPath(dir, "project");
         TestProvider(mock, "openrouter", "/openai", "mock-model", root);
+        TestProvider(mock, "openai", "/openai", "gpt-6.1-mock", root);
+        TestOpenAIResponses(mock, root);
+        TestWebTools(mock, root);
         TestProvider(mock, "anthropic", "/anthropic", "claude-opus-5-5", root);
         TestProvider(mock, "gemini", "/gemini", "gemini-mock", root);
         TestProvider(mock, "ollama", "/ollama", "mock:latest", root);

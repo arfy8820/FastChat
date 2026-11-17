@@ -161,6 +161,7 @@ void ChatRunner::RunAgentTurn(ChatTurn turn, Provider& provider) {
     agent.request = turn.request;
     agent.folder = turn.toolContext.root;
     agent.tools = turn.tools;
+    agent.webTools = turn.webTools;
     agent.approval = turn.toolContext.commandApproval;
     agent.permissionMode = turn.agentMode;
     agent.sessionCostBefore = 0;
@@ -303,6 +304,12 @@ void ChatRunner::RunTurn(ChatTurn turn) {
         turn.toolContext.cancel = &m_cancel;
         turn.toolContext.approveCommand = [this](const std::string& command) { return AskApproval(command, true); };
     }
+    // Looking things up: searching the web, reading pages, the time.
+    bool webTools = turn.webTools && !turn.computer;
+    if (webTools) {
+        for (auto& t : WebToolDefinitions()) turn.request.tools.push_back(t);
+        turn.request.systemPrompt += (Trim(turn.request.systemPrompt).empty() ? "" : "\n\n") + WebToolsPrompt();
+    }
 
     StreamCallbacks callbacks;
     callbacks.onText = [this](const std::string& t) { Post([t](ChatListener& l) { l.OnTextDelta(t); }); };
@@ -433,7 +440,7 @@ void ChatRunner::RunTurn(ChatTurn turn) {
         Post([reply](ChatListener& l) mutable { l.OnMessage(reply); });
         turn.request.messages.push_back(reply);
 
-        if (reply.toolCalls.empty() || !(turn.tools || turn.computer)) {
+        if (reply.toolCalls.empty() || !(turn.tools || turn.computer || webTools)) {
             // A message sent meanwhile keeps the conversation going.
             if (deliverQueued()) continue;
             if (result.stopReason == "max_tokens" || result.stopReason == "length" || result.stopReason == "MAX_TOKENS") {
@@ -456,7 +463,10 @@ void ChatRunner::RunTurn(ChatTurn turn) {
             started.status = "running";
             Post([started](ChatListener& l) { l.OnActivity(started); });
             auto toolStart = std::chrono::steady_clock::now();
-            ToolOutcome outcome = turn.computer ? RunComputerTool(call, computer) : RunTool(call, turn.toolContext);
+            ToolOutcome outcome = IsWebTool(call.name) ? RunWebTool(call, &m_cancel)
+                                  : turn.computer        ? RunComputerTool(call, computer)
+                                  : turn.tools           ? RunTool(call, turn.toolContext)
+                                                         : ToolOutcome{"No such tool here: " + call.name, true, "No such tool"};
             ActivityEvent ended;
             ended.id = call.id;
             ended.status = m_cancel ? "stopped" : outcome.error ? "failed" : "completed";

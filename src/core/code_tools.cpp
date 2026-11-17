@@ -459,6 +459,9 @@ std::string DescribeToolCall(const ToolCall& call) {
     if (n == "find_files") return "Find " + Str(args, "pattern");
     if (n == "search_files") return "Search for " + Str(args, "pattern");
     if (n == "run_command") return "Run: " + OneLine(Str(args, "command"), 120);
+    if (n == "web_search") return "Search the web for " + OneLine(Str(args, "query"), 100);
+    if (n == "fetch_page") return "Read " + OneLine(Str(args, "url"), 120);
+    if (n == "current_time") return "Check the time";
     return n + " " + OneLine(call.arguments, 80);
 }
 

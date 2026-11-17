@@ -46,6 +46,14 @@ providers, written in C++ with wxWidgets.
   can be set to run freely or never). Asking shows the command (or what an
   action does) in a read-only box, focused so it is read first and can be gone
   through line by line; Run (or Enter) runs it, Don't run (or Escape) doesn't.
+- **Looking things up**: in chat and code conversations, models can search the
+  web (DuckDuckGo, no key needed), read a page as text (long pages in parts)
+  and check the date and time, so "what's the weather in London" gets an
+  answer rather than "I can't access that". These only read, so nothing is
+  asked first. It works with every API provider whose model takes tools;
+  Claude Code chats get its own WebSearch and WebFetch. Turn it off in Settings >
+  General ("Let models search the web and read pages") or per conversation
+  (Web search and pages). Codex and Freebuff chats don't have it yet.
 - **On the fly, from Actions**: Reasoning effort (Ctrl+Shift+E for the next
   level) offers the levels the model takes - Claude Code low to max, Codex none
   to extra high, Anthropic's per model, Gemini's and Ollama's where they think -
@@ -65,7 +73,10 @@ providers, written in C++ with wxWidgets.
 - **Providers** (Settings > Providers): OpenAI, Anthropic, Google Gemini,
   OpenRouter, Ollama Cloud, Ollama on your own machine, DeepSeek, Groq, Mistral,
   xAI, any OpenAI-compatible server, and the coding agents **Claude Code**,
-  **Codex CLI** and **Freebuff CLI**, run on this computer with your own login. Each lists its models with context
+  **Codex CLI** and **Freebuff CLI**, run on this computer with your own login. OpenAI goes through its
+  Responses API (newer models take tools only there when reasoning, and it gives
+  summaries of their reasoning); the others through their own APIs or OpenAI's
+  chat completions. Each lists its models with context
   length and prices where the service gives them, and reports what it can about
   the account:
   - OpenRouter: credits remaining, purchased and used; the key's limit and its
@@ -145,9 +156,15 @@ providers, written in C++ with wxWidgets.
   task_started, task_finished.
 - **Per-conversation settings** (Ctrl+Shift+Comma) override any of it: model,
   system prompt, reasoning effort, temperature, response length, command
-  approval, speech, voice, rate, sound pack, and each event's sound and speech.
-- **Attachments**: images (PNG, JPEG, GIF, WebP, up to 5 MB), PDFs (up to 30
-  MB) and text files (up to 1 MB) go with a message: Attach files (Ctrl+Shift+F),
+  approval, web search, speech, voice, rate, sound pack, and each event's sound and speech.
+- **Attachments**: any file goes with a message: images (PNG, JPEG, GIF, WebP,
+  up to 5 MB), PDFs (up to 30 MB), text files of any kind (up to 1 MB: source,
+  notes, CSV, REAPER projects..., in UTF-8, UTF-16 or an older encoding, which
+  becomes UTF-8), and anything else (MIDI, Word documents, archives...). Those
+  other files are saved in a code conversation's folder, in
+  fastchat-attachments (a file of the same name is not overwritten), and the
+  message says where, so the model's tools can open them; in a chat, one up to
+  100 KB goes in the message as base64. Attach files (Ctrl+Shift+F),
   pasting a copied image or files with Ctrl+V, or dropping files on the window.
   They wait in the Attachments list under the message box (Delete removes one).
   Images and PDFs go to the model as themselves (OpenAI-style APIs, Anthropic,

@@ -304,7 +304,7 @@ std::string ToolKind(const std::string& toolName) {
     if (n == "edit_file" || n == "edit" || n == "multiedit" || n == "notebookedit" || n == "apply_patch") return "edit";
     if (n == "search_files" || n == "grep") return "search";
     if (n == "list_directory" || n == "find_files" || n == "glob" || n == "ls") return "list";
-    if (n == "webfetch" || n == "websearch" || n == "web_fetch" || n == "web_search") return "web";
+    if (n == "webfetch" || n == "websearch" || n == "web_fetch" || n == "web_search" || n == "fetch_page") return "web";
     if (n == "task" || n == "agent") return "agent";
     if (n == "todowrite" || n == "update_plan") return "todo";
     if (n == "exitplanmode" || n == "enterplanmode") return "plan";

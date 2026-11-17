@@ -61,6 +61,9 @@ private:
         m_focusResponse = new wxCheckBox(panel, wxID_ANY, "Move focus to a &response when it completes");
         m_focusResponse->SetValue(g.focusResponse);
         s->Add(m_focusResponse, 0, wxALL, 6);
+        m_webTools = new wxCheckBox(panel, wxID_ANY, "Let models searc&h the web and read pages (chat and code conversations)");
+        m_webTools->SetValue(g.webTools);
+        s->Add(m_webTools, 0, wxALL, 6);
 
         m_messageTimes = new wxChoice(panel, wxID_ANY);
         m_messageTimes->Append("Relative (5 minutes ago)");
@@ -559,6 +562,7 @@ private:
         g.confirmDeletes = m_confirmDeletes->GetValue();
         g.autoTitle = m_autoTitle->GetValue();
         g.focusResponse = m_focusResponse->GetValue();
+        g.webTools = m_webTools->GetValue();
         static const char* kTimes[] = {"relative", "absolute", "none"};
         g.messageTimes = kTimes[std::clamp(m_messageTimes->GetSelection(), 0, 2)];
         g.reasoningEffort = EffortChoices()[std::max(0, m_effort->GetSelection())].first;
@@ -606,6 +610,7 @@ private:
     wxCheckBox* m_focusResponse;
     wxChoice* m_effort;
     wxChoice* m_messageTimes;
+    wxCheckBox* m_webTools;
     wxSpinCtrl* m_maxTokens;
     wxTextCtrl* m_chatPrompt;
     wxTextCtrl* m_codePrompt;

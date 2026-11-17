@@ -50,6 +50,7 @@ bool Settings::Load() {
         Get(g, "codeSystemPrompt", general.codeSystemPrompt);
         Get(g, "codeFolder", general.codeFolder);
         Get(g, "messageTimes", general.messageTimes);
+        Get(g, "webTools", general.webTools);
         Get(g, "autoTitle", general.autoTitle);
         Get(g, "titleProviderId", general.titleProviderId);
         Get(g, "titleModel", general.titleModel);
@@ -138,6 +139,7 @@ bool Settings::Save() const {
         {"codeSystemPrompt", general.codeSystemPrompt},
         {"codeFolder", general.codeFolder},
         {"messageTimes", general.messageTimes},
+        {"webTools", general.webTools},
         {"autoTitle", general.autoTitle},
         {"titleProviderId", general.titleProviderId},
         {"titleModel", general.titleModel},

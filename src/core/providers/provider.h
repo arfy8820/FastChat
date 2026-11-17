@@ -180,6 +180,7 @@ struct AgentTurn {
     ChatRequest request;          // the history; the last message is the new one
     std::string folder;           // where it works (code conversations)
     bool tools = false;           // false: a plain chat, no tools
+    bool webTools = false;        // a chat may still search the web and read pages
     std::string approval = "ask"; // "ask", "auto", "deny"
     // Claude Code's permission mode, chosen by the user ("default", "acceptEdits",
     // "plan", "auto", "bypassPermissions", "dontAsk"). Empty: from `approval`.

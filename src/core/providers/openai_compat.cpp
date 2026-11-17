@@ -1,5 +1,6 @@
 // OpenAI's chat completions API, and the many services that copy it: OpenRouter,
-// DeepSeek, Groq, Mistral, xAI, LM Studio, vLLM...
+// DeepSeek, Groq, Mistral, xAI, LM Studio, vLLM... OpenAI itself gets its
+// Responses API (further down).
 
 #include "core/providers/provider_impl.h"
 #include "core/sse.h"
@@ -24,6 +25,8 @@ private:
     bool IsKind(const char* key) const { return m_config.kind == key; }
     std::vector<std::pair<std::string, std::string>> AuthHeaders() const;
     json BuildMessages(const ChatRequest& request) const;
+    json BuildResponsesInput(const ChatRequest& request) const;
+    ChatResult ChatResponses(const ChatRequest& request, const StreamCallbacks& callbacks, const std::atomic<bool>* cancel);
     void AccountOpenRouter(AccountInfo& info, const std::atomic<bool>* cancel);
     void AccountOpenAI(AccountInfo& info, const std::atomic<bool>* cancel);
     void AccountDeepSeek(AccountInfo& info, const std::atomic<bool>* cancel);
@@ -146,6 +149,7 @@ void MergeReasoningDetail(json& details, const json& piece) {
 
 ChatResult OpenAIProvider::Chat(const ChatRequest& request, const StreamCallbacks& callbacks,
                                 const std::atomic<bool>* cancel) {
+    if (IsKind("openai")) return ChatResponses(request, callbacks, cancel);
     ChatResult result;
     json body = {{"model", request.model}, {"messages", BuildMessages(request)}, {"stream", request.stream}};
     if (request.stream && !IsKind("mistral")) body["stream_options"] = {{"include_usage", true}};
@@ -291,6 +295,269 @@ ChatResult OpenAIProvider::Chat(const ChatRequest& request, const StreamCallback
     if (result.model.empty()) result.model = request.model;
     result.ok = !result.cancelled;
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI's Responses API: what OpenAI's own models get. Its newer models take
+// tools together with reasoning only here, and give summaries of their
+// reasoning. Reasoning goes back encrypted within a tool loop (store is off,
+// so OpenAI keeps nothing).
+// ---------------------------------------------------------------------------
+
+// Models that reason (and take "reasoning"): the o series and GPT-5 onwards,
+// except the chat variants.
+static bool OpenAIReasons(const std::string& model) {
+    std::string id = ToLower(model);
+    if (id.find("chat") != std::string::npos) return false;
+    if (id.size() >= 2 && id[0] == 'o' && id[1] >= '1' && id[1] <= '9') return true;
+    return id.size() >= 5 && StartsWith(id, "gpt-") && id[4] >= '5' && id[4] <= '9';
+}
+
+json OpenAIProvider::BuildResponsesInput(const ChatRequest& request) const {
+    json input = json::array();
+    json pendingImages = json::array();
+    auto flushImages = [&]() {
+        if (pendingImages.empty()) return;
+        json content = json::array({{{"type", "input_text"}, {"text", "Screenshot from the tool results above."}}});
+        for (auto& part : pendingImages) content.push_back(part);
+        input.push_back({{"role", "user"}, {"content", content}});
+        pendingImages = json::array();
+    };
+    auto filePart = [](const ImageData& img) {
+        std::string url = "data:" + img.mediaType + ";base64," + img.base64;
+        if (img.IsPdf()) return json{{"type", "input_file"}, {"filename", img.name.empty() ? "document.pdf" : img.name}, {"file_data", url}};
+        return json{{"type", "input_image"}, {"image_url", url}};
+    };
+    for (const auto& m : request.messages) {
+        if (m.role != Role::Tool) flushImages();
+        switch (m.role) {
+            case Role::System:
+                input.push_back({{"role", "system"}, {"content", m.content}});
+                break;
+            case Role::User:
+                if (m.images.empty()) {
+                    input.push_back({{"role", "user"}, {"content", m.content}});
+                } else {
+                    json content = json::array({{{"type", "input_text"}, {"text", m.content}}});
+                    for (const auto& img : m.images) content.push_back(filePart(img));
+                    input.push_back({{"role", "user"}, {"content", content}});
+                }
+                break;
+            case Role::Assistant: {
+                // Its reasoning first (only to the model that wrote it), then its text and calls.
+                if (m.model == request.model) {
+                    if (auto pd = m.providerData.find("openai"); pd != m.providerData.end() && pd->is_object()) {
+                        if (auto r = pd->find("reasoning"); r != pd->end() && r->is_array()) {
+                            for (const auto& item : *r) input.push_back(item);
+                        }
+                    }
+                }
+                if (!m.content.empty()) input.push_back({{"role", "assistant"}, {"content", m.content}});
+                for (const auto& c : m.toolCalls) {
+                    input.push_back({{"type", "function_call"},
+                                     {"call_id", c.id},
+                                     {"name", c.name},
+                                     {"arguments", c.arguments.empty() ? "{}" : c.arguments}});
+                }
+                break;
+            }
+            case Role::Tool:
+                input.push_back({{"type", "function_call_output"}, {"call_id", m.toolCallId}, {"output", m.content}});
+                for (const auto& img : m.images) pendingImages.push_back(filePart(img));
+                break;
+        }
+    }
+    flushImages();
+    return input;
+}
+
+ChatResult OpenAIProvider::ChatResponses(const ChatRequest& request, const StreamCallbacks& callbacks,
+                                         const std::atomic<bool>* cancel) {
+    json body = {{"model", request.model}, {"input", BuildResponsesInput(request)}, {"stream", request.stream}, {"store", false}};
+    if (!request.systemPrompt.empty()) body["instructions"] = request.systemPrompt;
+    if (!request.tools.empty()) {
+        json tools = json::array();
+        for (const auto& t : request.tools) {
+            // Not strict: strict schemas need every property required.
+            tools.push_back({{"type", "function"}, {"name", t.name}, {"description", t.description}, {"parameters", t.parameters},
+                             {"strict", false}});
+        }
+        body["tools"] = tools;
+    }
+    if (request.temperature) body["temperature"] = *request.temperature;
+    if (request.maxTokens > 0) body["max_output_tokens"] = request.maxTokens;
+    bool effortChosen = !request.reasoningEffort.empty();
+    if (effortChosen || OpenAIReasons(request.model)) {
+        json reasoning = {{"summary", "auto"}};
+        if (effortChosen) reasoning["effort"] = request.reasoningEffort == "max" ? "xhigh" : request.reasoningEffort;
+        body["reasoning"] = reasoning;
+        body["include"] = json::array({"reasoning.encrypted_content"});
+    }
+
+    for (int attempt = 0;; attempt++) {
+        ChatResult result;
+        struct Call {
+            std::string id;
+            std::string name;
+            std::string arguments;
+        };
+        std::map<int, Call> calls;
+        json reasoningItems = json::array();
+        std::string streamError;
+        std::string status, incompleteReason;
+
+        auto readUsage = [&](const json& u) {
+            if (!u.is_object()) return;
+            result.usage.inputTokens = u.value("input_tokens", int64_t{0});
+            result.usage.outputTokens = u.value("output_tokens", int64_t{0});
+            if (auto d = u.find("input_tokens_details"); d != u.end() && d->is_object()) {
+                result.usage.cachedInputTokens = d->value("cached_tokens", int64_t{0});
+            }
+            if (auto d = u.find("output_tokens_details"); d != u.end() && d->is_object()) {
+                result.usage.reasoningTokens = d->value("reasoning_tokens", int64_t{0});
+            }
+        };
+        auto addReasoning = [&](const std::string& piece, bool newPart) {
+            if (piece.empty() && !newPart) return;
+            std::string text = (newPart && !result.reasoning.empty() ? "\n\n" : "") + piece;
+            if (text.empty()) return;
+            result.reasoning += text;
+            if (callbacks.onReasoning) callbacks.onReasoning(text);
+        };
+        // A finished output item: calls and reasoning come from these (text
+        // and reasoning summaries stream as they come; a whole response, not
+        // streamed, has them only here).
+        auto itemDone = [&](const json& item, int index, bool streamed) {
+            std::string type = item.value("type", std::string());
+            if (type == "function_call") {
+                Call& c = calls[index];
+                c.id = item.value("call_id", c.id);
+                c.name = item.value("name", c.name);
+                if (item.contains("arguments") && item["arguments"].is_string()) c.arguments = item["arguments"].get<std::string>();
+            } else if (type == "reasoning") {
+                json kept = item;
+                kept.erase("status");
+                reasoningItems.push_back(kept);
+                if (!streamed) {
+                    for (const auto& s : item.value("summary", json::array())) {
+                        if (s.is_object()) addReasoning(s.value("text", std::string()), true);
+                    }
+                }
+            } else if (type == "message" && !streamed) {
+                for (const auto& part : item.value("content", json::array())) {
+                    if (part.is_object() && part.value("type", std::string()) == "output_text") {
+                        std::string t = part.value("text", std::string());
+                        result.text += t;
+                        if (callbacks.onText && !t.empty()) callbacks.onText(t);
+                    } else if (part.is_object() && part.value("type", std::string()) == "refusal") {
+                        result.text += part.value("refusal", std::string());
+                    }
+                }
+            }
+        };
+        auto readResponse = [&](const json& r, bool streamed) {
+            if (!r.is_object()) return;
+            if (auto id = r.find("id"); id != r.end() && id->is_string()) result.responseId = id->get<std::string>();
+            if (auto model = r.find("model"); model != r.end() && model->is_string()) result.model = model->get<std::string>();
+            status = r.value("status", status);
+            if (auto inc = r.find("incomplete_details"); inc != r.end() && inc->is_object()) {
+                incompleteReason = inc->value("reason", std::string());
+            }
+            if (auto e = r.find("error"); e != r.end() && e->is_object()) streamError = e->value("message", JsonDump(*e));
+            readUsage(r.value("usage", json::object()));
+            if (!streamed) {
+                int index = 0;
+                for (const auto& item : r.value("output", json::array())) itemDone(item, index++, false);
+            }
+        };
+
+        SseParser sse([&](const std::string&, const std::string& data) {
+            json ev = json::parse(data, nullptr, false);
+            if (ev.is_discarded() || !ev.is_object()) return true;
+            std::string type = ev.value("type", std::string());
+            int index = ev.value("output_index", 0);
+            if (type == "response.output_text.delta") {
+                std::string piece = ev.value("delta", std::string());
+                result.text += piece;
+                if (callbacks.onText && !piece.empty()) callbacks.onText(piece);
+            } else if (type == "response.reasoning_summary_text.delta") {
+                addReasoning(ev.value("delta", std::string()), false);
+            } else if (type == "response.reasoning_summary_part.added") {
+                if (!result.reasoning.empty()) addReasoning(std::string(), true);
+            } else if (type == "response.output_item.added") {
+                const json& item = ev.value("item", json::object());
+                if (item.value("type", std::string()) == "function_call") {
+                    Call& c = calls[index];
+                    c.id = item.value("call_id", std::string());
+                    c.name = item.value("name", std::string());
+                    if (callbacks.onToolCallStarted && !c.name.empty()) callbacks.onToolCallStarted(c.name);
+                }
+            } else if (type == "response.function_call_arguments.delta") {
+                calls[index].arguments += ev.value("delta", std::string());
+            } else if (type == "response.function_call_arguments.done") {
+                calls[index].arguments = ev.value("arguments", calls[index].arguments);
+            } else if (type == "response.output_item.done") {
+                itemDone(ev.value("item", json::object()), index, true);
+            } else if (type == "response.created" || type == "response.in_progress" || type == "response.completed" ||
+                       type == "response.incomplete" || type == "response.failed") {
+                readResponse(ev.value("response", json::object()), true);
+            } else if (type == "error") {
+                streamError = ev.value("message", JsonDump(ev));
+            }
+            return true;
+        });
+
+        auto headers = AuthHeaders();
+        headers.emplace_back("Accept", request.stream ? "text/event-stream" : "application/json");
+        std::string url = BaseUrl() + "/responses";
+        HttpResponse response = Send("POST", url, headers, JsonDump(body), cancel,
+                                     request.stream ? std::function<bool(const char*, size_t)>(
+                                                          [&](const char* d, size_t n) { return sse.Feed(d, n); })
+                                                    : nullptr);
+        result.httpStatus = response.status;
+        CollectRateLimits(response, result);
+        if (response.cancelled || (cancel && cancel->load())) {
+            result.cancelled = true;
+        } else if (!response.Ok()) {
+            // Reasoning summaries need a verified organization, and a model
+            // FastChat took for a reasoning one may not take "reasoning": drop
+            // what was asked for unasked and try again.
+            std::string why = ToLower(response.body);
+            if (response.status == 400 && attempt < 2 && body.contains("reasoning")) {
+                if (body["reasoning"].contains("summary") && (why.find("summar") != std::string::npos || why.find("verif") != std::string::npos)) {
+                    body["reasoning"].erase("summary");
+                    if (body["reasoning"].empty()) body.erase("reasoning");
+                    continue;
+                }
+                if (!effortChosen && why.find("reasoning") != std::string::npos) {
+                    body.erase("reasoning");
+                    body.erase("include");
+                    continue;
+                }
+            }
+            SetHttpError(result, response, url);
+            return result;
+        }
+        if (request.stream) sse.Finish();
+        else readResponse(ParseJsonOrEmpty(response.body), false);
+
+        for (auto& [index, c] : calls) {
+            if (c.name.empty()) continue;
+            if (c.id.empty()) c.id = "call_" + NewId().substr(0, 24);
+            result.toolCalls.push_back({c.id, c.name, c.arguments});
+        }
+        if (!reasoningItems.empty()) result.providerData["openai"] = {{"reasoning", reasoningItems}};
+        if (status == "incomplete" && (incompleteReason == "max_output_tokens" || incompleteReason.empty())) result.stopReason = "length";
+        else result.stopReason = result.toolCalls.empty() ? "stop" : "tool_calls";
+        if (!streamError.empty() || status == "failed") {
+            result.error = streamError.empty() ? "The response failed" : streamError;
+            result.errorDetails = "Provider: " + m_config.name + "\nThe service reported this in the middle of its reply: " + result.error + "\n";
+            return result;
+        }
+        if (result.model.empty()) result.model = request.model;
+        result.ok = !result.cancelled;
+        return result;
+    }
 }
 
 bool IsChatModelId(const std::string& id) {

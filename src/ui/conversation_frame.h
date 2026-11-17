@@ -80,6 +80,9 @@ private:
     bool StartTurn(bool compactOnly = false);
     // Files to send with the next message (Attach files, pasting, dropping).
     void ChooseAttachments();
+    // Where attached files that are not images, PDFs or text are saved: a code
+    // conversation's folder ("" in a chat).
+    std::string AttachmentFolder() const;
     void AddAttachment(const Attachment& a);
     bool PasteAttachments();  // false: nothing on the clipboard to attach
     void RemoveAttachment(int index);

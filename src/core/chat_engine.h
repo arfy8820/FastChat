@@ -7,6 +7,7 @@
 
 #include "core/code_tools.h"
 #include "core/computer_tools.h"
+#include "core/web_tools.h"
 #include "core/providers/provider.h"
 
 #include <atomic>
@@ -66,6 +67,7 @@ struct ChatTurn {
     ProviderConfig provider;
     ChatRequest request;          // model, system prompt, settings; messages = the history
     bool tools = false;           // code conversation
+    bool webTools = false;        // web search, reading pages and the time (chat and code)
     bool computer = false;        // computer use conversation
     bool vision = true;           // the model can see images (computer use sends screenshots)
     ToolContext toolContext;      // also the approval setting for computer use

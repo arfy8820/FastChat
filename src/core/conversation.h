@@ -109,6 +109,7 @@ struct ConversationSettings {
     // Claude Code's permission mode: "default" (ask), "acceptEdits", "plan",
     // "auto", "bypassPermissions", "dontAsk"; empty: from commandApproval.
     std::string agentMode;
+    std::optional<bool> webTools;          // searching the web and reading pages; unset: the global setting
     std::optional<bool> soundsEnabled;
     std::optional<std::string> soundPack;  // "" = no pack (built-in tones)
     SpeechOverrides speech;

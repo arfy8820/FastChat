@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """A stand-in for the AI services, for FastChat's tests.
 
-Speaks just enough of each API: OpenAI chat completions (/openai), Anthropic
-messages (/anthropic), Gemini (/gemini) and Ollama (/ollama), streaming. When the
-request offers tools and has no tool result yet, the reply calls list_directory;
-otherwise it streams a short text answer.
+Speaks just enough of each API: OpenAI chat completions (/openai), OpenAI's
+Responses API (/openai/responses), Anthropic messages (/anthropic), Gemini
+(/gemini) and Ollama (/ollama), streaming. When the request offers tools and has
+no tool result yet, the reply calls list_directory (or, offered only the web
+tools, web_search); otherwise it streams a short text answer. /search answers
+like DuckDuckGo's HTML results, and /page is a web page.
 
 Usage: python mock_server.py PORT
 """
@@ -17,6 +19,8 @@ TEXT = ["Hello", " world.", " This is", " the second", " sentence."]
 
 
 def has_tool_result(body, style):
+    if style == "responses":
+        return any(i.get("type") == "function_call_output" for i in body.get("input", []))
     if style == "openai":
         return any(m.get("role") == "tool" for m in body.get("messages", []))
     if style == "ollama":
@@ -37,6 +41,14 @@ def has_tool_result(body, style):
 
 def image_placed_right(body, style):
     """Whether a screenshot from a tool result arrived where that API wants it."""
+    if style == "responses":
+        items = body.get("input", [])
+        outs = [i for i, m in enumerate(items) if m.get("type") == "function_call_output"]
+        for i, m in enumerate(items):
+            if m.get("role") == "user" and isinstance(m.get("content"), list) and outs and i > max(outs):
+                if any(p.get("type") == "input_image" for p in m["content"]):
+                    return True
+        return False
     if style == "openai" or style == "ollama":
         msgs = body.get("messages", [])
         tool_idx = [i for i, m in enumerate(msgs) if m.get("role") == "tool"]
@@ -67,6 +79,15 @@ def image_placed_right(body, style):
 def attachments_placed_right(body, style):
     """Whether an image and a PDF the user attached arrived as that API takes them
     (Ollama takes images only: the PDF is named in the text)."""
+    if style == "responses":
+        for m in body.get("input", []):
+            parts = m.get("content") if m.get("role") == "user" and isinstance(m.get("content"), list) else []
+            image = any(p.get("type") == "input_image" and p["image_url"].startswith("data:image/png;base64,") for p in parts)
+            pdf = any(p.get("type") == "input_file" and p.get("filename") == "report.pdf" and
+                      p["file_data"].startswith("data:application/pdf;base64,") for p in parts)
+            if image and pdf:
+                return True
+        return False
     if style == "openai":
         for m in body.get("messages", []):
             parts = m.get("content") if m.get("role") == "user" and isinstance(m.get("content"), list) else []
@@ -129,6 +150,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path
+        if p.startswith("/page"):
+            self.send_page("<html><head><title>Mock page</title><style>p{}</style><script>var x=1;</script></head>"
+                           "<body><h1>Forecast</h1><p>Rain later &amp; wind.</p><ul><li>Monday: 12&deg;C</li>"
+                           "<li>Tuesday: 14&deg;C</li></ul></body></html>")
+            return
         if p.startswith("/openai/models"):
             self.send_json({"data": [{"id": "mock-model", "created": 1, "context_length": 128000,
                                       "pricing": {"prompt": "0.000001", "completion": "0.000002"}}]})
@@ -151,10 +177,31 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_json({"error": {"message": "not found: " + p}}, 404)
 
+    def send_page(self, html):
+        data = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
-        body = json.loads(self.rfile.read(length) or b"{}")
+        raw = self.rfile.read(length) or b"{}"
         p = self.path
+        if p.startswith("/search"):
+            # Like DuckDuckGo's HTML results: an ad, then results linked through it.
+            from urllib.parse import parse_qs, quote
+            query = parse_qs(raw.decode("utf-8")).get("q", [""])[0]
+            self.send_page(
+                '<div class="result result--ad"><a class="result__a" href="https://duckduckgo.com/y.js?ad=1">Ad</a></div>'
+                '<div class="result"><h2><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=' +
+                quote("https://weather.example/london?days=3", safe="") + '&amp;rut=x">London &amp; <b>weather</b></a></h2>'
+                '<a class="result__snippet" href="#">Rain later, <b>12&deg;C</b>, about ' + query + '.</a></div>'
+                '<div class="result"><h2><a rel="nofollow" class="result__a" href="https://second.example/">Second result</a></h2>'
+                '<a class="result__snippet" href="#">Another one.</a></div>')
+            return
+        body = json.loads(raw)
         if p.startswith("/flaky/chat/completions"):
             FLAKY["count"] += 1
             if FLAKY["count"] % 3 != 0:
@@ -165,6 +212,8 @@ class Handler(BaseHTTPRequestHandler):
             self.openai(body)
         elif p.startswith("/openai/chat/completions"):
             self.openai(body)
+        elif p.startswith("/openai/responses"):
+            self.openai_responses(body)
         elif p.startswith("/anthropic/messages"):
             self.anthropic(body)
         elif "/gemini/models/" in p:
@@ -191,7 +240,16 @@ class Handler(BaseHTTPRequestHandler):
             events.append("data: " + json.dumps(c) + "\n\n")
         chunk({"reasoning": "Let me think."})
         tool_names = [t["function"]["name"] for t in body.get("tools", [])]
-        if "look" in tool_names and not has_tool_result(body, "openai"):
+        if "web_search" in tool_names and "list_directory" not in tool_names and not has_tool_result(body, "openai"):
+            # A chat with the web tools: search first.
+            chunk({"tool_calls": [{"index": 0, "id": "call_web", "type": "function",
+                                   "function": {"name": "web_search", "arguments": "{\"query\": \"weather in London\"}"}}]})
+            chunk({}, "tool_calls")
+        elif "web_search" in tool_names and "list_directory" not in tool_names:
+            result = [m for m in body["messages"] if m.get("role") == "tool"][-1]["content"]
+            chunk({"content": "Searched: " + result.splitlines()[2].split(". ", 1)[1]})
+            chunk({}, "stop")
+        elif "look" in tool_names and not has_tool_result(body, "openai"):
             # Computer use: look at the screen.
             chunk({"tool_calls": [{"index": 0, "id": "call_look", "type": "function",
                                    "function": {"name": "look", "arguments": "{}"}}]})
@@ -210,6 +268,56 @@ class Handler(BaseHTTPRequestHandler):
                          "prompt_tokens_details": {"cached_tokens": 40}, "cost": 0.0012})
         events.append("data: [DONE]\n\n")
         self.send_sse(events)
+
+    def openai_responses(self, body):
+        """OpenAI's Responses API, streamed, with a reasoning summary and its
+        encrypted reasoning, which must come back before the call in a tool loop."""
+        if body.get("model") == "fail":
+            self.send_json({"error": {"message": "Model fail does not exist"}}, 400)
+            return
+        assert body.get("store") is False, body
+        assert "messages" not in body
+        for t in body.get("tools", []):
+            assert t["type"] == "function" and t.get("strict") is False and t["name"], t
+        if body.get("model", "").startswith("gpt-6"):
+            assert body["reasoning"]["summary"] == "auto" and body["include"] == ["reasoning.encrypted_content"], body
+        items = body.get("input", [])
+        if not body.get("stream"):
+            self.send_json({"id": "resp_2", "model": body["model"], "status": "completed", "output": [
+                {"type": "reasoning", "id": "rs_2", "summary": [{"type": "summary_text", "text": "Briefly."}], "encrypted_content": "enc456"},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Whole answer."}]}],
+                "usage": {"input_tokens": 7, "output_tokens": 3}})
+            return
+        ev = []
+        def e(obj):
+            ev.append("event: %s\ndata: %s\n\n" % (obj["type"], json.dumps(obj)))
+        e({"type": "response.created", "response": {"id": "resp_1", "model": body["model"], "status": "in_progress"}})
+        e({"type": "response.output_item.added", "output_index": 0, "item": {"type": "reasoning", "id": "rs_1", "summary": []}})
+        e({"type": "response.reasoning_summary_part.added", "output_index": 0, "summary_index": 0})
+        e({"type": "response.reasoning_summary_text.delta", "output_index": 0, "delta": "Let me think."})
+        e({"type": "response.output_item.done", "output_index": 0, "item": {"type": "reasoning", "id": "rs_1", "status": "completed",
+           "summary": [{"type": "summary_text", "text": "Let me think."}], "encrypted_content": "enc123"}})
+        tool_names = [t["name"] for t in body.get("tools", [])]
+        if body.get("tools") and not has_tool_result(body, "responses"):
+            name, args = ("look", "{}") if "look" in tool_names else ("list_directory", "{\"path\": \".\"}")
+            e({"type": "response.output_item.added", "output_index": 1,
+               "item": {"type": "function_call", "id": "fc_1", "call_id": "call_r1", "name": name, "arguments": ""}})
+            e({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": args[:5]})
+            e({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": args[5:]})
+            e({"type": "response.output_item.done", "output_index": 1,
+               "item": {"type": "function_call", "id": "fc_1", "call_id": "call_r1", "name": name, "arguments": args, "status": "completed"}})
+        else:
+            if has_tool_result(body, "responses") and not image_placed_right(body, "responses"):
+                kinds = [i.get("type") for i in items]
+                r = kinds.index("reasoning")
+                assert items[r]["encrypted_content"] == "enc123" and kinds[r + 1] == "function_call", items
+                assert "status" not in items[r]
+            for t in (ATTACHED if attachments_placed_right(body, "responses") else SEEN if image_placed_right(body, "responses") else TEXT):
+                e({"type": "response.output_text.delta", "output_index": 1, "delta": t})
+        e({"type": "response.completed", "response": {"id": "resp_1", "model": body["model"], "status": "completed",
+           "usage": {"input_tokens": 100, "input_tokens_details": {"cached_tokens": 40}, "output_tokens": 20,
+                     "output_tokens_details": {"reasoning_tokens": 5}}}})
+        self.send_sse(ev)
 
     def anthropic(self, body):
         assert body.get("thinking", {}).get("type") == "adaptive", body.get("thinking")

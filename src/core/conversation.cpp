@@ -90,6 +90,7 @@ json ConversationSettingsToJson(const ConversationSettings& s) {
     if (!s.reasoningEffort.empty()) j["reasoningEffort"] = s.reasoningEffort;
     if (!s.commandApproval.empty()) j["commandApproval"] = s.commandApproval;
     if (!s.agentMode.empty()) j["agentMode"] = s.agentMode;
+    PutOpt(j, "webTools", s.webTools);
     PutOpt(j, "soundsEnabled", s.soundsEnabled);
     PutOpt(j, "soundPack", s.soundPack);
     json sp = json::object();
@@ -128,6 +129,7 @@ ConversationSettings ConversationSettingsFromJson(const json& j) {
     s.reasoningEffort = j.value("reasoningEffort", std::string());
     s.commandApproval = j.value("commandApproval", std::string());
     s.agentMode = j.value("agentMode", std::string());
+    GetOpt(j, "webTools", s.webTools);
     GetOpt(j, "soundsEnabled", s.soundsEnabled);
     GetOpt(j, "soundPack", s.soundPack);
     if (auto it = j.find("speech"); it != j.end() && it->is_object()) {

@@ -86,6 +86,12 @@ private:
         s->Add(LabeledRow(panel, "T&emperature:", m_temp, 0), 0, wxALL, 6);
         m_ownTemp->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { UpdateEnabled(); });
 
+        if (m_conv.type != ConversationType::Computer) {
+            m_webTools = MakeTriChoice(panel, AppSettings().general.webTools);
+            SetTriChoice(m_webTools, m_work.webTools);
+            s->Add(LabeledRow(panel, "&Web search and pages:", m_webTools, 0), 0, wxALL, 6);
+        }
+
         m_maxTokens = new wxSpinCtrl(panel, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxSP_ARROW_KEYS, 0, 1000000,
                                      m_work.maxTokens.value_or(0));
         s->Add(LabeledRow(panel, "Maximum response to&kens (0 for the default):", m_maxTokens, 0), 0, wxALL, 6);
@@ -241,6 +247,7 @@ private:
         m_work.reasoningEffort = EffortChoices()[std::max(0, m_effort->GetSelection())].first;
         if (m_ownTemp->GetValue()) m_work.temperature = m_temp->GetValue();
         else m_work.temperature.reset();
+        if (m_webTools) m_work.webTools = GetTriChoice(m_webTools);
         if (m_maxTokens->GetValue() > 0) m_work.maxTokens = m_maxTokens->GetValue();
         else m_work.maxTokens.reset();
         if (m_folder) m_conv.folder = S(m_folder->GetValue());
@@ -278,6 +285,7 @@ private:
     wxCheckBox* m_ownTemp;
     wxSpinCtrlDouble* m_temp;
     wxSpinCtrl* m_maxTokens;
+    wxChoice* m_webTools = nullptr;
     wxTextCtrl* m_folder = nullptr;
     wxChoice* m_approval = nullptr;
     wxChoice* m_speechOn;

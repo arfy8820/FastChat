@@ -233,8 +233,9 @@ ChatResult ClaudeCodeProvider::RunAgent(const AgentTurn& turn, const AgentCallba
         argv.push_back(req.systemPrompt);
     }
     if (!turn.tools) {
+        // A chat: nothing that touches this computer, but it may look things up.
         argv.push_back("--tools");
-        argv.push_back("");
+        argv.push_back(turn.webTools ? "WebSearch,WebFetch" : "");
     } else {
         // "Ask" means FastChat's dialog decides, whatever mode the user's own
         // Claude Code settings start in (auto mode would approve on its own).
@@ -642,7 +643,8 @@ ChatResult ClaudeCodeProvider::RunAgent(const AgentTurn& turn, const AgentCallba
                     what = "Agent '" + agent + "' wants to: " + Describe(tool, input, folder);
                 }
                 // A mode the user chose decides what reaches FastChat, and that is asked.
-                if (!chosenMode && turn.approval == "auto") allow = true;
+                if (!turn.tools && turn.webTools && (tool == "WebSearch" || tool == "WebFetch")) allow = true;  // a chat's lookups only read
+                else if (!chosenMode && turn.approval == "auto") allow = true;
                 else if ((chosenMode || turn.approval != "deny") && callbacks.approve) {
                     allow = callbacks.approve(what, IsCommandTool(tool) && owner == subCallOwner.end());
                 }

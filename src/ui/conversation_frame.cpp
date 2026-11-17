@@ -648,7 +648,7 @@ void ConversationFrame::Send() {
         queued.role = Role::User;
         queued.conversationId = m_conv.id;
         queued.content = S(m_input->GetValue());
-        AttachToMessage(queued, m_attachments);
+        AttachToMessage(queued, m_attachments, AttachmentFolder());
         m_runner->Enqueue(queued);
         m_queued.push_back(queued.content + AttachmentsSuffix(queued));
         if (QueuedShown()) m_list->Append(U("Queued: " + OneLine(m_queued.back(), kMaxRowChars)));
@@ -669,7 +669,7 @@ void ConversationFrame::Send() {
     m.role = Role::User;
     m.conversationId = m_conv.id;
     m.content = S(m_input->GetValue());
-    AttachToMessage(m, m_attachments);
+    AttachToMessage(m, m_attachments, AttachmentFolder());
     if (!AppDatabase().AddMessage(m)) {
         ShowError(this, "The message could not be saved: " + U(AppDatabase().LastError()));
         return;
@@ -686,8 +686,8 @@ void ConversationFrame::Send() {
 
 void ConversationFrame::ChooseAttachments() {
     wxFileDialog dlg(this, "Attach files", "", "",
-                     "Images, PDFs and text files|*.png;*.jpg;*.jpeg;*.gif;*.webp;*.pdf;*.txt;*.md;*.csv;*.json;*.xml;*.log;"
-                     "*.py;*.c;*.cpp;*.h;*.js;*.ts;*.html;*.css|All files|*.*",
+                     "All files|*.*|Images, PDFs and text files|*.png;*.jpg;*.jpeg;*.gif;*.webp;*.pdf;*.txt;*.md;*.csv;*.json;*.xml;*.log;"
+                     "*.py;*.c;*.cpp;*.h;*.js;*.ts;*.html;*.css",
                      wxFD_OPEN | wxFD_FILE_MUST_EXIST | wxFD_MULTIPLE);
     if (dlg.ShowModal() != wxID_OK) return;
     wxArrayString paths;
@@ -696,13 +696,25 @@ void ConversationFrame::ChooseAttachments() {
     m_input->SetFocus();
 }
 
+std::string ConversationFrame::AttachmentFolder() const {
+    return m_conv.type == ConversationType::Code ? m_conv.folder : std::string();
+}
+
 void ConversationFrame::AttachPaths(const wxArrayString& paths) {
     wxString problems;
     for (const auto& path : paths) {
         Attachment a;
         std::string error;
-        if (LoadAttachment(S(path), a, error)) AddAttachment(a);
-        else problems += (problems.empty() ? "" : "\n") + U(error);
+        if (LoadAttachment(S(path), a, error)) {
+            // A file that is not an image, PDF or text goes whole only to a code
+            // conversation (saved in its folder).
+            error = AttachmentProblem(a, !AttachmentFolder().empty());
+            if (error.empty()) {
+                AddAttachment(a);
+                continue;
+            }
+        }
+        problems += (problems.empty() ? "" : "\n") + U(error);
     }
     if (!problems.empty()) ShowError(this, problems, "Attach files");
 }
@@ -831,6 +843,7 @@ bool ConversationFrame::StartTurn(bool compactOnly) {
     turn.request.maxTokens = m_conv.settings.maxTokens.value_or(g.maxTokens);
     turn.request.reasoningEffort = m_conv.settings.reasoningEffort.empty() ? g.reasoningEffort : m_conv.settings.reasoningEffort;
     turn.tools = m_conv.type == ConversationType::Code;
+    turn.webTools = m_conv.type != ConversationType::Computer && m_conv.settings.webTools.value_or(g.webTools);
     turn.maxSteps = g.maxToolSteps;
     turn.toolContext.root = m_conv.folder;
     turn.toolContext.commandApproval = m_conv.settings.commandApproval.empty() ? g.commandApproval : m_conv.settings.commandApproval;
