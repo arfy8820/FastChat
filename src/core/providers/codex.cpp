@@ -1,7 +1,7 @@
 // The Codex CLI as a provider: `codex exec --json`, prompt on standard input.
 // Codex cannot ask for approval in this mode, so code conversations run in its
-// workspace-write sandbox (edits inside the folder, no network) and chats in
-// read-only. Commands it runs are stored as run_command calls with their
+// workspace-write sandbox (edits inside the folder; the network too, unless the
+// provider's setting turns it off) and chats in read-only. Commands it runs are stored as run_command calls with their
 // output and exit code, like FastChat's own.
 
 #include "core/providers/provider_impl.h"
@@ -119,6 +119,11 @@ ChatResult CodexProvider::RunAgent(const AgentTurn& turn, const AgentCallbacks& 
     const ChatRequest& req = turn.request;
     std::vector<std::string> argv = {program, "exec", "--json", "--skip-git-repo-check", "-C", folder, "--sandbox",
                                      turn.tools && turn.approval != "deny" ? "workspace-write" : "read-only"};
+    if (turn.tools && turn.approval != "deny" && CodexNetworkAccess(m_config)) {
+        // Edits stay inside the folder; commands may reach the network.
+        argv.push_back("-c");
+        argv.push_back("sandbox_workspace_write.network_access=true");
+    }
     if (!req.model.empty() && req.model != "default") {
         argv.push_back("-m");
         argv.push_back(req.model);

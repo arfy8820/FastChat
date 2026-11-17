@@ -98,7 +98,8 @@ providers, written in C++ with wxWidgets.
   words; Answer sends your choices back, Don't answer tells it you declined.
   Questions are always asked, even with everything allowed, and have their own
   event (Question for you). Codex cannot ask in headless mode, so it gets file
-  edits inside the folder only, with no network access; Freebuff asks in its own
+  edits inside the folder only, and network access for its commands (installing
+  packages, fetching pages, pushing), which its provider's settings can turn off; Freebuff asks in its own
   question box, which becomes the Questions dialog. Each reply keeps the
   agent's session id, so the next message resumes that session. Freebuff has no
   headless mode at all, so it is driven the way BlindPilot drives it: its own

@@ -772,7 +772,7 @@ static void TestAgents(const std::string& root) {
     CHECK_EQ(cx.messages.size(), size_t{5});  // call, output, change call, change, answer
     if (cx.messages.size() == 5) {
         CHECK_EQ(cx.messages[0].toolCalls[0].name, std::string("run_command"));
-        CHECK_EQ(cx.messages[0].reasoning, std::string("sandbox=workspace-write"));
+        CHECK_EQ(cx.messages[0].reasoning, std::string("sandbox=workspace-write +network"));  // network on by default
         CHECK(cx.messages[1].content.find("Exit code: 0") != std::string::npos);
         CHECK(!cx.messages[1].toolError);
         CHECK_EQ(cx.messages[3].reasoning, std::string("Changed main.cpp"));
@@ -785,6 +785,14 @@ static void TestAgents(const std::string& root) {
     CHECK(cxChat.outcome == ChatListener::Outcome::Done);
     CHECK(cxChat.text.find("Resumed thread-1") != std::string::npos);
     CHECK(cxChat.messages.size() == 1 && cxChat.messages[0].reasoning == "sandbox=read-only");
+    // The network turned off in the provider's settings.
+    {
+        ProviderConfig offline = codex;
+        offline.extra["network"] = false;
+        CHECK(!CodexNetworkAccess(offline) && CodexNetworkAccess(codex));
+        TestListener cxOff = RunAgentTurn(offline, {}, "Please run the build", true, true, root);
+        CHECK(!cxOff.messages.empty() && cxOff.messages[0].reasoning == "sandbox=workspace-write");
+    }
 
     // Images go to Codex as files (and are cleaned up); a PDF is only named.
     std::cout << "  codex: attachments\n";

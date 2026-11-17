@@ -45,6 +45,9 @@ struct ProviderKindInfo {
 };
 
 const std::vector<ProviderKindInfo>& ProviderKinds();
+// Whether Codex's commands may use the network in code conversations (the
+// provider's "network" setting; on unless turned off).
+bool CodexNetworkAccess(const ProviderConfig& config);
 const ProviderKindInfo* FindProviderKind(const std::string& key);
 
 struct ModelInfo;

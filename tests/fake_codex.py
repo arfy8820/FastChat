@@ -11,6 +11,7 @@ import sys
 
 args = sys.argv[1:]
 sandbox = args[args.index("--sandbox") + 1] if "--sandbox" in args else "?"
+network = "sandbox_workspace_write.network_access=true" in args
 resume = args[args.index("resume") + 1] if "resume" in args else None
 # Attached images (--image FILE), which must come before the "-" for standard input.
 images = [args[i + 1] for i, a in enumerate(args[:-1]) if a in ("--image", "-i")]
@@ -25,7 +26,7 @@ def out(obj):
 
 out({"type": "thread.started", "thread_id": resume or "thread-1"})
 out({"type": "turn.started"})
-out({"type": "item.completed", "item": {"id": "item_0", "type": "reasoning", "text": "sandbox=" + sandbox}})
+out({"type": "item.completed", "item": {"id": "item_0", "type": "reasoning", "text": "sandbox=" + sandbox + (" +network" if network else "")}})
 if "run" in prompt:
     out({"type": "item.started", "item": {"id": "item_1", "type": "command_execution", "command": "dir /b",
          "status": "in_progress"}})

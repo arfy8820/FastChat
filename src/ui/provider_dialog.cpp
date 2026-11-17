@@ -91,6 +91,11 @@ public:
         modelRow->Add(choose, 0);
         s->Add(modelRow, 0, wxEXPAND | wxALL, 6);
 
+        // Codex: network access inside its sandbox (on unless turned off).
+        m_network = new wxCheckBox(this, wxID_ANY, "Let Codex use the net&work (install packages, fetch pages, push)");
+        m_network->SetValue(CodexNetworkAccess(config));
+        s->Add(m_network, 0, wxALL, 6);
+
         m_enabled = new wxCheckBox(this, wxID_ANY, "&Enabled");
         m_enabled->SetValue(config.enabled);
         s->Add(m_enabled, 0, wxALL, 6);
@@ -146,6 +151,7 @@ private:
             m_urlLabel->SetLabel("Base &URL:");
             m_url->SetHint(wxString("Default: ") + k.defaultBaseUrl);
         }
+        m_network->Show(k.style == ApiStyle::Codex);
         bool admin = k.hasAdminKey;
         m_adminLabel->Show(admin);
         m_admin->Show(admin);
@@ -177,6 +183,7 @@ private:
         c.baseUrl = Trim(S(m_url->GetValue()));
         c.defaultModel = Trim(S(m_model->GetValue()));
         c.enabled = m_enabled->GetValue();
+        if (Kind().style == ApiStyle::Codex) c.extra["network"] = m_network->GetValue();
         return c;
     }
 
@@ -264,6 +271,7 @@ private:
     wxButton* m_browseProgram;
     wxTextCtrl* m_model;
     wxCheckBox* m_enabled;
+    wxCheckBox* m_network;
     wxButton* m_test;
     wxStaticText* m_testResult;
     std::shared_ptr<std::atomic<bool>> m_cancel = std::make_shared<std::atomic<bool>>(false);

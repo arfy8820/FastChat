@@ -118,7 +118,7 @@ const std::vector<ProviderKindInfo>& ProviderKinds() {
          "uses its own tools; FastChat asks you before it changes anything."},
         {"codex", "Codex CLI", ApiStyle::Codex, "", false, false, "", "https://github.com/openai/codex", "",
          "OpenAI's coding agent, run on this computer with your ChatGPT login or an API key. In code conversations it "
-         "may edit files in the folder but has no network access."},
+         "may edit files in the folder, and its commands may use the network (it can be turned off here)."},
         {"freebuff", "Freebuff CLI", ApiStyle::Freebuff, "", false, false, "", "https://freebuff.com/cli", "",
          "Freebuff's coding agent, run on this computer with your Freebuff login in its own terminal interface, in "
          "the background, the way BlindPilot drives it. In code conversations it may edit files in the folder." },
@@ -133,6 +133,11 @@ const ProviderKindInfo* FindProviderKind(const std::string& key) {
         if (key == k.key) return &k;
     }
     return nullptr;
+}
+
+bool CodexNetworkAccess(const ProviderConfig& config) {
+    auto it = config.extra.find("network");
+    return it == config.extra.end() || !it->is_boolean() || it->get<bool>();
 }
 
 std::vector<std::string> EffortLevelsFor(const std::string& providerKind, const std::string& model, const ModelInfo* info) {
