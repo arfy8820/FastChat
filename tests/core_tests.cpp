@@ -1907,7 +1907,7 @@ static void TestVoLlamaImport(const std::string& dir) {
         {{"role", "assistant"}, {"content", nullptr}, {"extra", {
             {"reasoning", "Thinking"}, {"tool_calls", json::array({
                 {{"id", "call1"}, {"type", "function"}, {"function", {{"name", "read_file"}, {"arguments", "{\"path\":\"x\"}"}}}}
-            })}}},
+            })}}}},
         {{"role", "tool"}, {"content", "file contents"}, {"extra", {{"tool_call_id", "call1"}, {"name", "read_file"}}}},
         {{"role", "assistant"}, {"content", "Done"}}
     });
@@ -1942,7 +1942,7 @@ static void TestVoLlamaImport(const std::string& dir) {
     if (imp.messages.size() == 5) CHECK_EQ(imp.messages[2].reasoning, std::string("Thinking"));
     CHECK(ImportVoLlamaJson("[]", "Empty", imp, error));
     CHECK_EQ(imp.exchanges, 0);
-    CHECK_EQ(imp.conversation.settings.systemPrompt.value_or("default"), std::string(""));
+    CHECK(!imp.conversation.settings.systemPrompt.has_value());  // no system message: the default prompt
     for (const std::string bad : {"{", "{}", "{\"messages\":42}", "[42]",
              "[{\"role\":\"unknown\"}]", "[{\"role\":\"user\",\"content\":[]}]",
              "[{\"role\":\"assistant\",\"extra\":{\"tool_calls\":[{}]}}]"}) {

@@ -164,8 +164,8 @@ bool ImportVoLlamaJson(const std::string& jsonText, const std::string& name,
     imported.source = "VoLlama";
     imported.conversation.title = name;
     imported.conversation.createdAt = NowSeconds();
-    // No provider, model or timestamps are stored by VoLlama.
-    imported.conversation.settings.systemPrompt = "";
+    // No provider, model or timestamps are stored by VoLlama. Without a system
+    // message, the conversation keeps the default system prompt (as Basilisk's do).
     for (const auto& item : *messages) {
         Message m;
         m.role = RoleFromKey(Str(item, "role"));
@@ -196,7 +196,9 @@ bool ImportVoLlamaJson(const std::string& jsonText, const std::string& name,
         }
         // Leading system messages become the prompt; later ones retain their position.
         if (m.role == Role::System && imported.messages.empty()) {
-            auto& prompt = *imported.conversation.settings.systemPrompt;
+            auto& own = imported.conversation.settings.systemPrompt;
+            if (!own) own = std::string();
+            std::string& prompt = *own;
             if (!prompt.empty()) prompt += "\n\n";
             prompt += m.content;
             continue;
